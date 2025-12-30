@@ -1,0 +1,529 @@
+openapi: 3.0.3
+info:
+  title: Phone Coder WebSocket API
+  description: |
+    Phone Coder 使用 WebSocket 进行实时通信，本文档描述 WebSocket 消息格式。
+
+    ## 连接方式
+
+    ```
+    wss://your-tunnel.trycloudflare.com/ws
+    ```
+
+    ## 认证流程
+
+    1. 建立 WebSocket 连接
+    2. 发送 `auth` 消息进行密码验证
+    3. 收到 `auth.result` 确认认证状态
+    4. 认证成功后可发送其他消息
+
+    ## 消息格式
+
+    所有消息均为 JSON 格式，包含 `type` 字段标识消息类型。
+  version: 1.0.0
+  contact:
+    name: yonghuizuo
+
+servers:
+  - url: ws://localhost:8080/ws
+    description: 本地开发环境
+  - url: wss://your-tunnel.trycloudflare.com/ws
+    description: 生产环境（Cloudflare Tunnel）
+
+tags:
+  - name: auth
+    description: 认证相关消息
+  - name: session
+    description: 会话管理消息
+  - name: message
+    description: 消息收发
+
+# WebSocket 协议使用 paths 描述消息类型
+paths:
+  /auth:
+    post:
+      tags:
+        - auth
+      summary: 密码认证
+      description: |
+        客户端发送密码进行认证，认证成功后才能发送其他消息。
+      operationId: auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRequest'
+            example:
+              type: "auth"
+              password: "your_password"
+      responses:
+        '200':
+          description: 认证结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResult'
+              examples:
+                success:
+                  value:
+                    type: "auth.result"
+                    success: true
+                failure:
+                  value:
+                    type: "auth.result"
+                    success: false
+                    message: "密码错误"
+
+  /session.list:
+    post:
+      tags:
+        - session
+      summary: 获取会话列表
+      description: 获取所有会话和可用的工作目录列表
+      operationId: sessionList
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum: ["session.list"]
+            example:
+              type: "session.list"
+      responses:
+        '200':
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListResponse'
+
+  /session.create:
+    post:
+      tags:
+        - session
+      summary: 创建新会话
+      description: |
+        创建新的 Claude Code 会话，指定工作目录。
+        工作目录必须在服务端配置的允许列表中。
+      operationId: sessionCreate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreateRequest'
+            example:
+              type: "session.create"
+              workDir: "/Users/xxx/workspace/my-project"
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCreatedResponse'
+        '400':
+          description: 创建失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                type: "message.error"
+                code: "DIR_NOT_ALLOWED"
+                message: "该目录不在允许列表中"
+
+  /session.delete:
+    post:
+      tags:
+        - session
+      summary: 删除会话
+      description: |
+        删除指定会话，如果会话中有运行中的进程会先停止。
+      operationId: sessionDelete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionDeleteRequest'
+            example:
+              type: "session.delete"
+              sessionId: "sess_123"
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDeletedResponse'
+
+  /message.send:
+    post:
+      tags:
+        - message
+      summary: 发送消息
+      description: |
+        向 Claude Code 发送消息。
+
+        消息发送后会依次收到：
+        1. `message.sent` - 消息已接收确认
+        2. `message.stream` - 流式输出（多次）
+        3. `message.done` - 输出完成
+      operationId: messageSend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageSendRequest'
+            example:
+              type: "message.send"
+              sessionId: "sess_123"
+              content: "帮我写一个 hello world"
+              messageId: "msg_456"
+      responses:
+        '200':
+          description: 消息已接收
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageSentResponse'
+        '400':
+          description: 发送失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                session_not_found:
+                  value:
+                    type: "message.error"
+                    sessionId: "sess_123"
+                    messageId: "msg_456"
+                    code: "SESSION_NOT_FOUND"
+                    message: "会话不存在或已关闭"
+                cli_busy:
+                  value:
+                    type: "message.error"
+                    sessionId: "sess_123"
+                    messageId: "msg_456"
+                    code: "CLI_BUSY"
+                    message: "请等待当前任务完成"
+
+  /session.stop:
+    post:
+      tags:
+        - session
+      summary: 停止任务
+      description: |
+        停止当前会话中正在运行的 Claude Code 任务。
+        相当于在终端按 Ctrl+C。
+      operationId: sessionStop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionStopRequest'
+            example:
+              type: "session.stop"
+              sessionId: "sess_123"
+      responses:
+        '200':
+          description: 停止成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStoppedResponse'
+        '400':
+          description: 停止失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    # ===== 请求消息 =====
+    AuthRequest:
+      type: object
+      required:
+        - type
+        - password
+      properties:
+        type:
+          type: string
+          enum: ["auth"]
+          description: 消息类型
+        password:
+          type: string
+          description: 认证密码
+
+    SessionCreateRequest:
+      type: object
+      required:
+        - type
+        - workDir
+      properties:
+        type:
+          type: string
+          enum: ["session.create"]
+        workDir:
+          type: string
+          description: 工作目录路径（必须在允许列表中）
+
+    SessionDeleteRequest:
+      type: object
+      required:
+        - type
+        - sessionId
+      properties:
+        type:
+          type: string
+          enum: ["session.delete"]
+        sessionId:
+          type: string
+          description: 会话 ID
+
+    MessageSendRequest:
+      type: object
+      required:
+        - type
+        - sessionId
+        - content
+        - messageId
+      properties:
+        type:
+          type: string
+          enum: ["message.send"]
+        sessionId:
+          type: string
+          description: 会话 ID
+        content:
+          type: string
+          description: 消息内容
+        messageId:
+          type: string
+          description: 客户端生成的消息 ID，用于关联响应
+
+    SessionStopRequest:
+      type: object
+      required:
+        - type
+        - sessionId
+      properties:
+        type:
+          type: string
+          enum: ["session.stop"]
+        sessionId:
+          type: string
+          description: 会话 ID
+
+    # ===== 响应消息 =====
+    AuthResult:
+      type: object
+      required:
+        - type
+        - success
+      properties:
+        type:
+          type: string
+          enum: ["auth.result"]
+        success:
+          type: boolean
+          description: 认证是否成功
+        message:
+          type: string
+          description: 失败时的错误信息
+
+    SessionListResponse:
+      type: object
+      required:
+        - type
+        - sessions
+        - workdirs
+      properties:
+        type:
+          type: string
+          enum: ["session.list"]
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+          description: 会话列表
+        workdirs:
+          type: array
+          items:
+            type: string
+          description: 可用的工作目录列表
+
+    Session:
+      type: object
+      required:
+        - id
+        - name
+        - workDir
+        - status
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: 会话 ID
+        name:
+          type: string
+          description: 项目名称（目录名）
+        workDir:
+          type: string
+          description: 工作目录完整路径
+        status:
+          type: string
+          enum: ["running", "idle"]
+          description: 会话状态
+        updatedAt:
+          type: string
+          format: date-time
+          description: 最后更新时间（ISO 8601）
+
+    SessionCreatedResponse:
+      type: object
+      required:
+        - type
+        - sessionId
+        - name
+        - workDir
+      properties:
+        type:
+          type: string
+          enum: ["session.created"]
+        sessionId:
+          type: string
+          description: 新会话 ID
+        name:
+          type: string
+          description: 项目名称
+        workDir:
+          type: string
+          description: 工作目录
+
+    SessionDeletedResponse:
+      type: object
+      required:
+        - type
+        - sessionId
+      properties:
+        type:
+          type: string
+          enum: ["session.deleted"]
+        sessionId:
+          type: string
+          description: 被删除的会话 ID
+
+    MessageSentResponse:
+      type: object
+      required:
+        - type
+        - sessionId
+        - messageId
+      properties:
+        type:
+          type: string
+          enum: ["message.sent"]
+        sessionId:
+          type: string
+        messageId:
+          type: string
+          description: 客户端消息 ID
+
+    MessageStreamResponse:
+      type: object
+      required:
+        - type
+        - sessionId
+        - content
+      properties:
+        type:
+          type: string
+          enum: ["message.stream"]
+        sessionId:
+          type: string
+        content:
+          type: string
+          description: 本次输出的内容片段
+
+    MessageDoneResponse:
+      type: object
+      required:
+        - type
+        - sessionId
+      properties:
+        type:
+          type: string
+          enum: ["message.done"]
+        sessionId:
+          type: string
+
+    SessionStoppedResponse:
+      type: object
+      required:
+        - type
+        - sessionId
+        - status
+      properties:
+        type:
+          type: string
+          enum: ["session.stopped"]
+        sessionId:
+          type: string
+        status:
+          type: string
+          enum: ["idle"]
+
+    ErrorResponse:
+      type: object
+      required:
+        - type
+        - code
+        - message
+      properties:
+        type:
+          type: string
+          enum: ["message.error", "session.stop.error"]
+        sessionId:
+          type: string
+          description: 相关会话 ID
+        messageId:
+          type: string
+          description: 相关消息 ID
+        code:
+          type: string
+          description: 错误码
+          enum:
+            - SESSION_NOT_FOUND
+            - CLI_BUSY
+            - CONN_LOST
+            - INVALID_CONTENT
+            - NOT_RUNNING
+            - STOP_FAILED
+            - DIR_NOT_FOUND
+            - DIR_NOT_ALLOWED
+        message:
+          type: string
+          description: 错误描述
+
+    # ===== 错误码说明 =====
+    # SESSION_NOT_FOUND: 会话不存在
+    # CLI_BUSY: Claude Code 正在运行
+    # CONN_LOST: WebSocket 连接断开
+    # INVALID_CONTENT: 消息内容无效
+    # NOT_RUNNING: 任务未在运行
+    # STOP_FAILED: 停止失败
+    # DIR_NOT_FOUND: 目录不存在
+    # DIR_NOT_ALLOWED: 目录不在允许列表中
